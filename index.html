@@ -318,7 +318,7 @@ function dateOnly(v){const [y,m,d]=v.split('-').map(Number);return new Date(y,m-
 function formatDateOnly(d){return [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-')}
 function formatLongDate(v){const d=typeof v==='string'?dateOnly(v):v;return d.toLocaleDateString('en-GB',{day:'2-digit',month:'long',year:'numeric'})}
 function challengeEndDate(){const d=dateOnly(START_DATE);d.setDate(d.getDate()+99);return d}
-function daysLeft(){const t=new Date();t.setHours(0,0,0,0);return Math.max(0,Math.min(100,Math.floor((challengeEndDate()-t)/86400000)+1))}
+function daysLeft(){const t=new Date();t.setHours(0,0,0,0);return Math.max(0,Math.min(99,Math.floor((challengeEndDate()-t)/86400000)))}
 function updateChallengeSummary(){const s=dateOnly(START_DATE),e=challengeEndDate(),t=new Date();t.setHours(0,0,0,0);document.getElementById('challenge-current-day').textContent=Math.min(100,Math.max(1,Math.floor((t-s)/86400000)+1));document.getElementById('challenge-start-date').textContent=START_DATE;document.getElementById('challenge-end-date').textContent=formatDateOnly(e);document.getElementById('challenge-days-left').textContent=daysLeft()}
 function cadenceValueFor(r){if(r.frequency==='weekly')return Math.max(1,Math.min(7,Number(r.days_between_checkins)||Number(r.custom_interval_days)||7));if(r.frequency==='custom')return Math.max(1,Math.min(100,Number(r.custom_target_completions)||Number(r.target_completions)||1));return Math.max(1,Math.min(100,Number(r.daily_target_completions)||Number(r.target_completions)||100))}
 function targetFor(r){if(r.frequency==='weekly')return Math.ceil(100/cadenceValueFor(r));if(r.frequency==='custom')return cadenceValueFor(r);return cadenceValueFor(r)}
@@ -338,7 +338,7 @@ function buildCard(record,personal){
   card.querySelector('.record-description').textContent=record.goal_description||'No description yet.';
   card.querySelector('.record-start').textContent='Starts '+(record.start_date||START_DATE);
   const target=targetFor(record),done=Number(record.days_done)||0,percent=Math.min(100,Math.round(done/target*100));
-  card.querySelector('.record-days').textContent=daysLeft()+' left';
+  card.querySelector('.record-days').textContent=daysLeft()+' days left';
   const cadence=record.frequency==='weekly'?('every '+cadenceValueFor(record)+' days'):record.frequency==='custom'?('custom · '+target+' times'):('daily · '+target+' days'); card.querySelector('.record-schedule').textContent=cadence+' · '+Math.max(0,target-done)+' remaining';
   card.querySelector('.record-progress-label').textContent=done+' of '+target+' completed ('+percent+'%)';
   card.querySelector('.record-due').textContent='Next due: '+formatLongDate(nextDueFor(record))+' · Streak: '+(Number(record.current_streak)||0)+' · '+(record.recent_update||'No updates yet.');
