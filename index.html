@@ -278,7 +278,7 @@ let db, auth, currentUser = null, backendRecords = [], participantId = "", activ
 
 const COPY = {
   "site-title":"THE 100", "start-pill-text":"Begins 2 October 2026",
-  "eyebrow":"A SHARED RESET", "hero-title":"Make the next 100 days count.",
+  "eyebrow":"A shared reset", "hero-title":"Make the next 100 days count.",
   "hero-description":"Pick one meaningful goal. Log the days you showed up at your best — and the days you simply did the minimum. Both move you forward.",
   "join-title":"Claim your challenge", "join-copy":"Your challenge starts tomorrow. Keep the goal specific enough that you will know when you have done it.",
   "name-label":"Your name", "goal-label":"Your 100-day goal", "description-label":"Goal description (What will this goal change?)", "start-date-label":"Goal start date",
@@ -298,6 +298,8 @@ const COPY = {
 
 function setCopy(){
   Object.entries(COPY).forEach(([id,text])=>{const el=document.querySelector(`[data-template-id="${id}"]`); if(el && el.tagName!=='INPUT' && el.tagName!=='TEXTAREA') el.textContent=text;});
+  document.querySelectorAll('[data-template-id="best-button"]').forEach(el=>el.textContent='Check in — best');
+  document.querySelectorAll('[data-template-id="bare-button"]').forEach(el=>el.textContent='Check in — minimum');
   document.querySelectorAll('[data-template-id="name-input"],[data-template-id="goal-input"]').forEach(el=>el.placeholder='');
   document.getElementById('goal-description').placeholder='What does this goal mean in practice?';
   document.getElementById('best-definition').placeholder='What does your best version look like?';
@@ -311,7 +313,7 @@ function challengeEndDate(){const d=dateOnly(START_DATE);d.setDate(d.getDate()+9
 function daysLeft(){const t=new Date();t.setHours(0,0,0,0);return Math.max(0,Math.min(100,Math.floor((challengeEndDate()-t)/86400000)+1))}
 function updateChallengeSummary(){const s=dateOnly(START_DATE),e=challengeEndDate(),t=new Date();t.setHours(0,0,0,0);document.getElementById('challenge-current-day').textContent=Math.min(100,Math.max(1,Math.floor((t-s)/86400000)+1));document.getElementById('challenge-start-date').textContent=START_DATE;document.getElementById('challenge-end-date').textContent=formatDateOnly(e);document.getElementById('challenge-days-left').textContent=daysLeft()}
 function targetFor(r){if(Number(r.target_completions)>0)return Number(r.target_completions);const i=r.frequency==='weekly'?7:Math.max(1,Number(r.custom_interval_days)||1);return r.frequency==='weekly'?20:Math.ceil(100/i)}
-function nextDueFor(r){const i=r.frequency==='weekly'?7:Math.max(1,Number(r.custom_interval_days)||1);const start=new Date((r.start_date||START_DATE)+'T00:00:00');return new Date(start.getTime()+(Number(r.days_done)||0)*i*86400000).toISOString().slice(0,10)}
+function nextDueFor(r){const i=r.frequency==='weekly'?7:Math.max(1,Number(r.custom_interval_days)||1);const start=dateOnly(r.start_date||START_DATE);start.setDate(start.getDate()+(Number(r.days_done)||0)*i);return formatDateOnly(start)}
 function keyFor(r){return r.id||r.goal_id}
 function latestChallenges(records){return [...records].sort((a,b)=>{const da=Number(a.updated_at||0),db=Number(b.updated_at||0);return db-da})}
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.remove('hidden');clearTimeout(showToast.timer);showToast.timer=setTimeout(()=>t.classList.add('hidden'),3500)}
