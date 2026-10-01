@@ -75,6 +75,7 @@ main>section:nth-of-type(3){padding-bottom:30px!important;}
 [data-template-id="community-band"] .grid.grid-cols-3 strong{font-size:16px!important;}
 [data-template-id="community-band"] .grid.grid-cols-3 span{font-size:8px!important;}
 #community-list{margin-top:14px!important;}
+[data-template-id="edit-goal-panel"]{background:#f5f1e8!important;border:2px solid #172018!important;box-shadow:7px 7px 0 rgba(23,32,24,.08)!important;}
 .challenge-card{border-width:2px!important;border-radius:18px!important;padding:18px!important;}
 .challenge-card h3{font-size:23px!important;}
 .challenge-card p,.challenge-card span,.challenge-card button{font-size:11px!important;}
@@ -82,6 +83,10 @@ main>section:nth-of-type(3){padding-bottom:30px!important;}
 .challenge-card .record-actions button{min-height:44px!important;line-height:1.15!important;}
 .challenge-card .record-actions [data-template-id="edit-button"],.challenge-card .record-actions [data-template-id="delete-button"]{grid-column:span 1!important;}
 .challenge-card .record-actions [data-template-id="best-button"],.challenge-card .record-actions [data-template-id="bare-button"]{font-size:11px!important;font-weight:700!important;display:flex!important;align-items:center!important;justify-content:center!important;}
+.challenge-card .record-actions [data-template-id="edit-button"]{background:#d7f16a!important;color:#172018!important;}
+.challenge-card .record-actions [data-template-id="delete-button"]{background:#ef6a57!important;color:#172018!important;border-color:#172018!important;}
+#edit-delete-button{background:#ef6a57!important;color:#172018!important;border-color:#ef6a57!important;}
+#delete-confirm-button{background:#ef6a57!important;color:#172018!important;}
 @media(max-width:900px){body{max-width:760px!important;}main>section{padding-left:16px!important;padding-right:16px!important;}main>section:nth-of-type(2)>div{grid-template-columns:1fr!important;}[data-template-id="join-panel"]{max-width:none!important;} }
 @media(max-width:580px){body{max-width:none!important;margin:0!important;}body>header>div{padding:14px 16px!important;}body>header h1{font-size:18px!important;}[data-template-id="hero-panel"]{padding:20px!important;border-radius:18px!important;}[data-template-id="hero-panel"] [data-template-id="hero-title"]{font-size:29px!important;}main>section{padding-left:12px!important;padding-right:12px!important;}[data-template-id="join-panel"]{padding:16px!important;border-radius:16px!important;}[data-template-id="community-band"]{padding:16px!important;border-radius:18px!important;}.challenge-card{padding:14px!important;}.challenge-card h3{font-size:20px!important;}}
 </style>
@@ -289,8 +294,8 @@ const COPY = {
   "edit-bare-label":"Bare-minimum definition", "edit-frequency-label":"Frequency", "edit-interval-label":"Interval days", "edit-target-label":"Target completions",
   "shared-note":"Your goal is shared with the challenge community. Anonymous sign-in keeps your browser connected to your goals without requiring a password.",
   "my-kicker":"YOUR SPACE", "my-title":"My challenge", "load-text":"Loading the shared challenge…", "personal-empty-text":"You haven’t added a goal yet. Start with one small, specific commitment.",
-  "retry-button-label":"Try again", "community-kicker":"THE COLLECTIVE", "community-title":"Other participants", "community-copy":"See public goals, check-ins, streaks, and progress from other participants.",
-  "stat-people-label":"people", "stat-days-label":"days done", "stat-best-label":"best days", "community-empty-text":"No other public activity yet. Shared goals and progress will appear here when someone else joins or shares an update.",
+  "retry-button-label":"Try again", "community-kicker":"THE COLLECTIVE", "community-title":"Other participants", "community-copy":"See shared goals, check-ins, streaks, and progress from everyone in the challenge — including your goal.",
+  "stat-people-label":"people", "stat-days-label":"days done", "stat-best-label":"best days", "community-empty-text":"No shared goals yet. Join the challenge above and your goal will appear here automatically.",
   "delete-dialog-title":"Delete goal?", "delete-dialog-copy":"This will remove the selected goal and its check-in history. This cannot be undone.",
   "delete-cancel-button":"Cancel", "delete-confirm-button":"Delete goal", "edit-button":"Edit goal", "delete-button":"Delete goal",
   "best-button-text":"Check in — best", "bare-button-text":"Check in — minimum"
@@ -322,7 +327,7 @@ function isMine(r){return currentUser && r.participant_id===currentUser.uid}
 
 function buildCard(record,personal){
   const node=document.getElementById('challenge-template').content.cloneNode(true); const card=node.querySelector('article'); card.dataset.key=keyFor(record);
-  card.querySelector('.record-name').textContent=record.display_name||'Anonymous participant';
+  card.querySelector('.record-name').textContent=(record.display_name||'Anonymous participant')+(personal?'':' · '+(isMine(record)?'YOU':'PARTICIPANT'));
   card.querySelector('.record-goal').textContent=record.goal_title||'No goal shared yet';
   card.querySelector('.record-description').textContent=record.goal_description||'No description yet.';
   card.querySelector('.record-start').textContent='Starts '+(record.start_date||START_DATE);
@@ -344,7 +349,7 @@ function buildCard(record,personal){
 }
 function syncList(list,records,personal){list.replaceChildren();records.forEach(r=>list.appendChild(buildCard(r,personal)))}
 function render(){
-  const latest=latestChallenges(backendRecords), personal=latest.filter(isMine), others=latest.filter(r=>!isMine(r)&&r.is_shareable!==false);
+  const latest=latestChallenges(backendRecords), personal=latest.filter(isMine), others=latest.filter(r=>r.is_shareable!==false);
   document.getElementById('load-state').classList.add('hidden');document.getElementById('load-error').classList.add('hidden');
   document.getElementById('personal-empty').classList.toggle('hidden',personal.length>0);document.getElementById('personal-count').textContent=personal.length;
   syncList(document.getElementById('personal-list'),personal,true);syncList(document.getElementById('community-list'),others,false);
