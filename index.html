@@ -361,13 +361,36 @@ function render(){
 }
 function showLoadError(msg){document.getElementById('load-state').classList.add('hidden');document.getElementById('load-error').classList.remove('hidden');document.querySelector('[data-template-id="error-text"]').textContent=msg}
 
+let stopGoalsListener=null;
+let liveHeartbeat=null;
 async function initFirebase(){
   try{
     const app=firebase.initializeApp(firebaseConfig); db=firebase.firestore(); auth=firebase.auth();
     await auth.signInAnonymously(); currentUser=auth.currentUser; participantId=currentUser.uid; saveSession();
-    db.collection('goals').where('challenge_id','==',CANONICAL_CHALLENGE_ID).onSnapshot(snap=>{
-      backendRecords=snap.docs.map(d=>({id:d.id,...d.data()}));render();setSyncStatus('Saved and synced.',false);
-    },err=>{console.error(err);showLoadError('Could not load the shared challenge board. Check the Firebase connection and try again.');});
+
+    // One shared real-time Firestore listener drives BOTH "My challenge" and
+    // "The collective". No refresh is required when another browser edits/checks in.
+    const goalsQuery=db.collection('goals').where('challenge_id','==',CANONICAL_CHALLENGE_ID);
+    stopGoalsListener=goalsQuery.onSnapshot({includeMetadataChanges:true},snap=>{
+      backendRecords=snap.docs.map(d=>({id:d.id,...d.data()}));
+      render();
+      const when=new Date().toLocaleTimeString([], {hour:'numeric',minute:'2-digit',second:'2-digit'});
+      const liveLabel=snap.metadata.hasPendingWrites?'LIVE · saving…':'LIVE · synced '+when;
+      document.getElementById('collective-status').textContent=liveLabel;
+      setSyncStatus(snap.metadata.hasPendingWrites?'Saving…':'Saved and synced.',false);
+    },err=>{
+      console.error(err);
+      document.getElementById('collective-status').textContent='LIVE · connection lost — retrying…';
+      showLoadError('The live board connection was interrupted. Firebase will retry automatically.');
+    });
+
+    clearInterval(liveHeartbeat);
+    liveHeartbeat=setInterval(()=>{
+      if(!document.hidden && backendRecords.length){
+        const el=document.getElementById('collective-status');
+        if(el && !el.textContent.includes('saving')) el.textContent='LIVE · listening for updates';
+      }
+    },10000);
   }catch(err){console.error(err);showLoadError('Firebase could not connect. Please refresh and try again.');}
 }
 async function createGoal(data,button){button.disabled=true;setSyncStatus('Saving…');try{const id=currentUser.uid+'_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);await db.collection('goals').doc(id).set(data);activeName=data.display_name;saveSession();showToast('Your goal is on the board.');document.getElementById('challenge-form').reset();document.getElementById('goal-start-date').value=START_DATE;setSyncStatus('Saved and synced.');}catch(e){console.error(e);showToast('Could not save your goal. Please try again.');setSyncStatus('Save failed — please retry.')}finally{button.disabled=false}}
