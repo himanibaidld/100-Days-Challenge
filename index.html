@@ -409,15 +409,33 @@ async function initFirebase(){
     // One shared real-time Firestore listener drives BOTH "My challenge" and
     // "The collective". No refresh is required when another browser edits/checks in.
     const goalsQuery=db.collection('goals').where('challenge_id','==',CANONICAL_CHALLENGE_ID);
-    stopGoalsListener=goalsQuery.onSnapshot({includeMetadataChanges:true},snap=>{
+    const applyGoalsSnapshot=(snap,source)=>{
       backendRecords=snap.docs.map(d=>({id:d.id,...d.data()}));
+      console.log('100 Days: loaded goals', backendRecords.length, source);
       render();
       const when=new Date().toLocaleTimeString([], {hour:'numeric',minute:'2-digit',second:'2-digit'});
-      const liveLabel=snap.metadata.hasPendingWrites?'LIVE · saving…':'LIVE · synced '+when;
+      const liveLabel=snap.metadata && snap.metadata.hasPendingWrites?'LIVE · saving…':'LIVE · synced '+when;
       document.getElementById('collective-status').textContent=liveLabel;
-      setSyncStatus(snap.metadata.hasPendingWrites?'Saving…':'Saved and synced.',false);
+      setSyncStatus(snap.metadata && snap.metadata.hasPendingWrites?'Saving…':'Saved and synced.',false);
+      if(backendRecords.length===0){
+        document.getElementById('collective-status').textContent='LIVE · connected · no goals found';
+      }
+    };
+    // First do a direct read. This makes the board populate even if the realtime
+    // listener takes a moment to establish its stream. The listener below then
+    // keeps the same data live.
+    try{
+      const initial=await goalsQuery.get();
+      applyGoalsSnapshot(initial,'initial read');
+    }catch(readErr){
+      console.error('100 Days initial goal read failed',readErr);
+      document.getElementById('collective-status').textContent='LIVE · read failed';
+      showLoadError('Firebase connected, but the goals could not be read. Check the Firestore rules.');
+    }
+    stopGoalsListener=goalsQuery.onSnapshot({includeMetadataChanges:true},snap=>{
+      applyGoalsSnapshot(snap,'realtime');
     },err=>{
-      console.error(err);
+      console.error('100 Days realtime listener failed',err);
       document.getElementById('collective-status').textContent='LIVE · connection lost — retrying…';
       showLoadError('The live board connection was interrupted. Firebase will retry automatically.');
     });
