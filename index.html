@@ -420,6 +420,1037 @@ function updateEditCadenceFields(){const f=document.getElementById('edit-frequen
 document.getElementById('goal-frequency').addEventListener('change',updateCadenceFields);document.getElementById('cadence-value').addEventListener('input',updateCadenceFields);document.getElementById('edit-frequency-input').addEventListener('change',updateEditCadenceFields);document.getElementById('edit-cadence-value-input').addEventListener('input',updateEditCadenceFields);
 document.getElementById('edit-goal-form').addEventListener('submit',async e=>{e.preventDefault();const id=document.getElementById('edit-goal-key').value,r=backendRecords.find(x=>x.id===id);if(!r||!isMine(r))return showToast('That goal is no longer available.');const frequency=document.getElementById('edit-frequency-input').value,cadence=Math.max(1,Number(document.getElementById('edit-cadence-value-input').value)||1);let fields;if(frequency==='weekly'){const days=Math.min(7,cadence),count=Math.ceil(100*days/7);fields={days_per_week:days,days_between_checkins:days,custom_interval_days:days,target_completions:count,expected_completions:count};}else if(frequency==='custom'){const count=Math.min(100,cadence);fields={custom_target_completions:count,target_completions:count,expected_completions:count,custom_interval_days:Math.max(1,Math.round(100/count))};}else{fields={daily_target_completions:100,target_completions:100,expected_completions:100,custom_interval_days:1};}const b=e.submitter;b.disabled=true;try{await db.collection('goals').doc(id).update({goal_title:document.getElementById('edit-goal-title-input').value.trim(),goal_description:document.getElementById('edit-description-input').value.trim(),start_date:document.getElementById('edit-start-input').value,best_version_definition:document.getElementById('edit-best-input').value.trim(),bare_minimum_definition:document.getElementById('edit-bare-input').value.trim(),frequency,...fields,remaining_completions:Math.max(0,fields.expected_completions-(Number(r.days_done)||0)),next_due_date:nextDueFor({...r,start_date:document.getElementById('edit-start-input').value,frequency,...fields}),updated_at:Date.now(),recent_update:'Goal details updated'});document.getElementById('edit-goal-form').classList.add('hidden');showToast('Goal updated.')}catch(e){console.error(e);showToast('Could not update the goal.')}finally{b.disabled=false}});
 document.addEventListener('DOMContentLoaded',()=>{restoreSession();setCopy();document.getElementById('goal-start-date').value=START_DATE;updateCadenceFields();updateChallengeSummary();lucide.createIcons();initFirebase();});
+ /* ============================================================
+   THE 100 — V7 ADD-ON
+   Adds:
+   • Weekly exact days
+   • Editable weekly schedule
+   • Missed deadline count
+   • Google Calendar button
+   • Preserves ALL existing v7 data
+   ============================================================ */
+
+(function () {
+  'use strict';
+
+  const DAY_NAMES = [
+    'Sunday',
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Saturday'
+  ];
+
+  let pendingWeeklyDays = null;
+  let scheduleModal = null;
+
+  /* ----------------------------------------------------------
+     1. ADD "CHOOSE DAYS" TO THE EXISTING WEEKLY FORM
+     ---------------------------------------------------------- */
+
+  function addWeeklySelector() {
+
+    if (document.getElementById('v7-weekly-days-addon')) return;
+
+    const frequency =
+      document.getElementById('goal-frequency');
+
+    if (!frequency) return;
+
+    const help =
+      document.getElementById('cadence-help');
+
+    if (!help) return;
+
+    const box = document.createElement('div');
+
+    box.id = 'v7-weekly-days-addon';
+
+    box.style.cssText = `
+      margin-top:10px;
+      padding:12px;
+      border:1.5px solid #172018;
+      border-radius:10px;
+      background:#fffdf7;
+      display:none;
+    `;
+
+    box.innerHTML = `
+      <div style="
+        font-weight:700;
+        font-size:11px;
+        margin-bottom:8px;
+      ">
+        Choose your weekly days
+      </div>
+
+      <div id="v7-weekday-grid"
+        style="
+          display:grid;
+          grid-template-columns:repeat(7,1fr);
+          gap:5px;
+        ">
+        ${DAY_NAMES.map((name, i) => `
+          <button
+            type="button"
+            data-weekday="${i}"
+            style="
+              border:1.5px solid #172018;
+              background:#fffdf7;
+              color:#172018;
+              border-radius:7px;
+              padding:7px 2px;
+              font-size:9px;
+              font-weight:700;
+              cursor:pointer;
+            "
+          >${name.slice(0,3)}</button>
+        `).join('')}
+      </div>
+
+      <div id="v7-weekday-count"
+        style="
+          margin-top:7px;
+          font-size:10px;
+          opacity:.7;
+        ">
+        Choose your days.
+      </div>
+    `;
+
+    help.parentNode.insertBefore(box, help);
+
+    const buttons =
+      box.querySelectorAll('[data-weekday]');
+
+    buttons.forEach(button => {
+
+      button.addEventListener('click', () => {
+
+        const selected =
+          [...buttons].filter(
+            b => b.dataset.selected === 'true'
+          );
+
+        const already =
+          button.dataset.selected === 'true';
+
+        if (!already && selected.length >= 7) return;
+
+        button.dataset.selected =
+          already ? 'false' : 'true';
+
+        button.style.background =
+          button.dataset.selected === 'true'
+            ? '#d7f16a'
+            : '#fffdf7';
+
+        updateWeeklyCount();
+      });
+    });
+
+    function updateWeeklyCount() {
+
+      const count =
+        [...buttons].filter(
+          b => b.dataset.selected === 'true'
+        ).length;
+
+      box.querySelector(
+        '#v7-weekday-count'
+      ).textContent =
+        count
+          ? count + ' day' + (count === 1 ? '' : 's') + ' selected.'
+          : 'Choose your days.';
+    }
+
+    function toggle() {
+
+      box.style.display =
+        frequency.value === 'weekly'
+          ? 'block'
+          : 'none';
+    }
+
+    frequency.addEventListener('change', toggle);
+
+    toggle();
+  }
+
+
+  function getSelectedWeeklyDays() {
+
+    return [
+      ...document.querySelectorAll(
+        '#v7-weekday-grid [data-weekday][data-selected="true"]'
+      )
+    ].map(button =>
+      Number(button.dataset.weekday)
+    );
+  }
+
+
+  /* ----------------------------------------------------------
+     2. CAPTURE WEEKLY SELECTION BEFORE V7 SAVES
+     ---------------------------------------------------------- */
+
+  document.addEventListener(
+    'submit',
+    function (event) {
+
+      if (event.target.id !== 'challenge-form') return;
+
+      const frequency =
+        document.getElementById('goal-frequency')?.value;
+
+      if (frequency !== 'weekly') {
+        pendingWeeklyDays = null;
+        return;
+      }
+
+      const days = getSelectedWeeklyDays();
+
+      if (!days.length) {
+
+        event.preventDefault();
+
+        if (typeof showToast === 'function') {
+          showToast(
+            'Choose the days you want to do this goal.'
+          );
+        }
+
+        return;
+      }
+
+      pendingWeeklyDays = days;
+    },
+    true
+  );
+
+
+  /* ----------------------------------------------------------
+     3. GENERATE FUTURE SCHEDULE DATES
+     ---------------------------------------------------------- */
+
+  function generateSchedule(startDate, weekdays) {
+
+    const dates = [];
+
+    const start =
+      new Date(startDate + 'T00:00:00');
+
+    const end =
+      new Date(start);
+
+    end.setDate(
+      end.getDate() + 99
+    );
+
+    const cursor =
+      new Date(start);
+
+    while (cursor <= end) {
+
+      if (
+        weekdays.includes(
+          cursor.getDay()
+        )
+      ) {
+        dates.push(
+          cursor.toISOString().slice(0,10)
+        );
+      }
+
+      cursor.setDate(
+        cursor.getDate() + 1
+      );
+    }
+
+    return dates;
+  }
+
+
+  /* ----------------------------------------------------------
+     4. SAFELY ADD NEW FIELDS TO NEW WEEKLY GOALS
+     ---------------------------------------------------------- */
+
+  async function attachWeeklySchedule(record) {
+
+    if (!pendingWeeklyDays) return;
+
+    if (
+      record.frequency !== 'weekly' ||
+      !record.id
+    ) return;
+
+    const days =
+      [...pendingWeeklyDays];
+
+    const dates =
+      generateSchedule(
+        record.start_date || START_DATE,
+        days
+      );
+
+    try {
+
+      await db
+        .collection('goals')
+        .doc(record.id)
+        .update({
+
+          /* NEW fields only */
+          selected_weekdays: days,
+
+          scheduled_dates: dates,
+
+          completed_dates:
+            Array.isArray(record.completed_dates)
+              ? record.completed_dates
+              : [],
+
+          missed_deadlines: [],
+
+          schedule_version: 1,
+
+          schedule_updated_at:
+            Date.now()
+
+        });
+
+      pendingWeeklyDays = null;
+
+    } catch (error) {
+
+      console.error(
+        'Weekly schedule add-on error:',
+        error
+      );
+    }
+  }
+
+
+  /* ----------------------------------------------------------
+     5. DETECT NEW GOALS WITHOUT TOUCHING V7
+     ---------------------------------------------------------- */
+
+  let knownGoalIds = new Set();
+
+  function checkForNewGoal() {
+
+    if (
+      !Array.isArray(backendRecords) ||
+      !backendRecords.length
+    ) return;
+
+    const mine =
+      backendRecords.filter(
+        r =>
+          currentUser &&
+          r.participant_id === currentUser.uid
+      );
+
+    mine.forEach(record => {
+
+      if (
+        !knownGoalIds.has(record.id)
+      ) {
+
+        knownGoalIds.add(record.id);
+
+        if (
+          pendingWeeklyDays &&
+          record.frequency === 'weekly'
+        ) {
+          attachWeeklySchedule(record);
+        }
+      }
+
+    });
+  }
+
+
+  /* ----------------------------------------------------------
+     6. MISSED DEADLINES
+     ---------------------------------------------------------- */
+
+  function calculateMissed(record) {
+
+    if (
+      record.frequency !== 'weekly' ||
+      !Array.isArray(record.selected_weekdays) ||
+      !record.selected_weekdays.length
+    ) {
+      return [];
+    }
+
+    const start =
+      new Date(
+        (record.start_date || START_DATE)
+        + 'T00:00:00'
+      );
+
+    const today =
+      new Date();
+
+    today.setHours(0,0,0,0);
+
+    const completed =
+      new Set(
+        Array.isArray(record.completed_dates)
+          ? record.completed_dates
+          : []
+      );
+
+    /*
+      Preserve the last v7 check-in if available.
+      This prevents an existing v7 check-in from
+      automatically becoming a "miss".
+    */
+    if (record.check_in_date) {
+      completed.add(
+        record.check_in_date
+      );
+    }
+
+    const missed = [];
+
+    const cursor =
+      new Date(start);
+
+    while (cursor <= today) {
+
+      const weekday =
+        cursor.getDay();
+
+      const date =
+        cursor.toISOString().slice(0,10);
+
+      if (
+        record.selected_weekdays.includes(
+          weekday
+        ) &&
+        !completed.has(date)
+      ) {
+        missed.push(date);
+      }
+
+      cursor.setDate(
+        cursor.getDate() + 1
+      );
+    }
+
+    return missed;
+  }
+
+
+  /* ----------------------------------------------------------
+     7. SHOW MISSED COUNT
+     ---------------------------------------------------------- */
+
+  function showMissedCount(card, record) {
+
+    const missed =
+      calculateMissed(record);
+
+    let element =
+      card.querySelector(
+        '.v7-missed-count'
+      );
+
+    if (!missed.length) {
+
+      if (element) {
+        element.remove();
+      }
+
+      return;
+    }
+
+    if (!element) {
+
+      element =
+        document.createElement('div');
+
+      element.className =
+        'v7-missed-count';
+
+      element.style.cssText = `
+        margin-top:8px;
+        padding:8px 10px;
+        border:1.5px solid #172018;
+        border-radius:8px;
+        background:#ffe0d9;
+        font-size:11px;
+        font-weight:700;
+      `;
+
+      const due =
+        card.querySelector('.record-due');
+
+      if (due) {
+        due.parentNode.insertBefore(
+          element,
+          due.nextSibling
+        );
+      }
+    }
+
+    element.textContent =
+      'Missed deadlines: ' +
+      missed.length;
+  }
+
+
+  /* ----------------------------------------------------------
+     8. RECORD COMPLETED DATE WHEN CHECK-IN IS CLICKED
+     ---------------------------------------------------------- */
+
+  document.addEventListener(
+    'click',
+    async function (event) {
+
+      const button =
+        event.target.closest(
+          '[data-template-id="best-button"],' +
+          '[data-template-id="bare-button"]'
+        );
+
+      if (!button) return;
+
+      const card =
+        button.closest('.challenge-card');
+
+      if (!card) return;
+
+      const id =
+        card.dataset.key;
+
+      if (!id) return;
+
+      const today =
+        new Date()
+          .toISOString()
+          .slice(0,10);
+
+      try {
+
+        await db
+          .collection('goals')
+          .doc(id)
+          .update({
+
+            completed_dates:
+              firebase.firestore.FieldValue.arrayUnion(
+                today
+              )
+
+          });
+
+      } catch (error) {
+
+        console.error(
+          'Could not save completed date:',
+          error
+        );
+      }
+
+    },
+    true
+  );
+
+
+  /* ----------------------------------------------------------
+     9. WEEKLY SCHEDULE EDITOR
+     ---------------------------------------------------------- */
+
+  function openScheduleEditor(record) {
+
+    if (scheduleModal) {
+      scheduleModal.remove();
+    }
+
+    const current =
+      Array.isArray(record.selected_weekdays)
+        ? record.selected_weekdays
+        : [];
+
+    scheduleModal =
+      document.createElement('div');
+
+    scheduleModal.style.cssText = `
+      position:fixed;
+      inset:0;
+      background:rgba(23,32,24,.45);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding:20px;
+      z-index:9999;
+    `;
+
+    scheduleModal.innerHTML = `
+      <div style="
+        width:min(520px,100%);
+        background:#fffdf7;
+        border:2px solid #172018;
+        border-radius:18px;
+        padding:22px;
+        box-shadow:8px 8px 0 rgba(23,32,24,.15);
+      ">
+
+        <h3 style="
+          margin:0;
+          font-family:Fraunces,serif;
+          font-size:24px;
+        ">
+          Edit your schedule
+        </h3>
+
+        <p style="
+          font-size:11px;
+          line-height:1.5;
+          margin:7px 0 16px;
+        ">
+          Choose the days of the week you want this
+          goal to be due.
+        </p>
+
+        <div id="v7-edit-days"
+          style="
+            display:grid;
+            grid-template-columns:repeat(7,1fr);
+            gap:5px;
+          ">
+          ${DAY_NAMES.map((name, i) => `
+            <button
+              type="button"
+              data-day="${i}"
+              style="
+                border:1.5px solid #172018;
+                background:${current.includes(i)
+                  ? '#d7f16a'
+                  : '#fffdf7'};
+                border-radius:8px;
+                padding:9px 2px;
+                font-size:9px;
+                font-weight:700;
+                cursor:pointer;
+              "
+            >
+              ${name.slice(0,3)}
+            </button>
+          `).join('')}
+        </div>
+
+        <div style="
+          display:flex;
+          gap:8px;
+          margin-top:18px;
+        ">
+          <button
+            id="v7-schedule-cancel"
+            type="button"
+            style="
+              flex:1;
+              padding:10px;
+              border:2px solid #172018;
+              border-radius:9px;
+              background:#fffdf7;
+              font-weight:700;
+            "
+          >
+            Cancel
+          </button>
+
+          <button
+            id="v7-schedule-save"
+            type="button"
+            style="
+              flex:1;
+              padding:10px;
+              border:2px solid #172018;
+              border-radius:9px;
+              background:#d7f16a;
+              font-weight:700;
+            "
+          >
+            Save schedule
+          </button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(
+      scheduleModal
+    );
+
+    const buttons =
+      scheduleModal.querySelectorAll(
+        '[data-day]'
+      );
+
+    buttons.forEach(button => {
+
+      button.addEventListener(
+        'click',
+        () => {
+
+          const selected =
+            [...buttons].filter(
+              b =>
+                b.dataset.selected === 'true' ||
+                current.includes(
+                  Number(b.dataset.day)
+                )
+            );
+
+          const day =
+            Number(button.dataset.day);
+
+          const wasSelected =
+            button.style.background
+              .includes('d7f16a');
+
+          if (wasSelected) {
+
+            button.style.background =
+              '#fffdf7';
+
+            button.dataset.selected =
+              'false';
+
+          } else {
+
+            button.style.background =
+              '#d7f16a';
+
+            button.dataset.selected =
+              'true';
+          }
+        }
+      );
+
+    });
+
+    scheduleModal
+      .querySelector('#v7-schedule-cancel')
+      .onclick = () => {
+        scheduleModal.remove();
+        scheduleModal = null;
+      };
+
+    scheduleModal
+      .querySelector('#v7-schedule-save')
+      .onclick = async () => {
+
+        const selected =
+          [...buttons]
+            .filter(
+              b =>
+                b.style.background
+                  .includes('d7f16a')
+            )
+            .map(
+              b => Number(b.dataset.day)
+            );
+
+        if (!selected.length) {
+
+          showToast(
+            'Choose at least one day.'
+          );
+
+          return;
+        }
+
+        const dates =
+          generateSchedule(
+            record.start_date || START_DATE,
+            selected
+          );
+
+        try {
+
+          await db
+            .collection('goals')
+            .doc(record.id)
+            .update({
+
+              selected_weekdays:
+                selected,
+
+              scheduled_dates:
+                dates,
+
+              /*
+                Keep completed history.
+                We are only changing the future schedule.
+              */
+              schedule_updated_at:
+                Date.now(),
+
+              schedule_version: 1
+
+            });
+
+          showToast(
+            'Schedule updated.'
+          );
+
+          scheduleModal.remove();
+          scheduleModal = null;
+
+        } catch (error) {
+
+          console.error(error);
+
+          showToast(
+            'Could not update the schedule.'
+          );
+        }
+      };
+  }
+
+
+  /* ----------------------------------------------------------
+     10. GOOGLE CALENDAR
+     ---------------------------------------------------------- */
+
+  function addCalendarButton(card, record) {
+
+    if (
+      card.querySelector(
+        '.v7-google-calendar'
+      )
+    ) return;
+
+    const button =
+      document.createElement('button');
+
+    button.type = 'button';
+
+    button.className =
+      'v7-google-calendar';
+
+    button.textContent =
+      '＋ Add schedule to Google Calendar';
+
+    button.style.cssText = `
+      width:100%;
+      margin-top:8px;
+      padding:10px;
+      border:2px solid #172018;
+      border-radius:9px;
+      background:#fffdf7;
+      color:#172018;
+      font-size:11px;
+      font-weight:700;
+      cursor:pointer;
+    `;
+
+    button.onclick = () => {
+
+      const start =
+        record.start_date || START_DATE;
+
+      const d =
+        new Date(
+          start + 'T00:00:00'
+        );
+
+      const end =
+        new Date(d);
+
+      end.setDate(
+        end.getDate() + 100
+      );
+
+      const format =
+        date =>
+          date.toISOString()
+            .replace(/[-:]/g,'')
+            .replace(/\.\d{3}Z$/,'Z');
+
+      const url =
+        'https://calendar.google.com/calendar/render' +
+        '?action=TEMPLATE' +
+        '&text=' +
+        encodeURIComponent(
+          'THE 100 — ' +
+          (record.goal_title || 'My goal')
+        ) +
+        '&dates=' +
+        format(d) +
+        '/' +
+        format(end) +
+        '&details=' +
+        encodeURIComponent(
+          '100 Day Challenge — ' +
+          (record.goal_title || '')
+        );
+
+      window.open(
+        url,
+        '_blank',
+        'noopener'
+      );
+    };
+
+    const actions =
+      card.querySelector(
+        '.record-actions'
+      );
+
+    if (actions) {
+      actions.appendChild(button);
+    }
+  }
+
+
+  /* ----------------------------------------------------------
+     11. ADD "EDIT SCHEDULE" BUTTON TO PERSONAL CARDS
+     ---------------------------------------------------------- */
+
+  function enhanceCards() {
+
+    document
+      .querySelectorAll(
+        '.challenge-card'
+      )
+      .forEach(card => {
+
+        const id =
+          card.dataset.key;
+
+        if (!id) return;
+
+        const record =
+          Array.isArray(backendRecords)
+            ? backendRecords.find(
+                r => r.id === id
+              )
+            : null;
+
+        if (!record) return;
+
+        showMissedCount(
+          card,
+          record
+        );
+
+        if (
+          currentUser &&
+          record.participant_id ===
+          currentUser.uid &&
+          record.frequency === 'weekly'
+        ) {
+
+          if (
+            !card.querySelector(
+              '.v7-edit-schedule'
+            )
+          ) {
+
+            const button =
+              document.createElement(
+                'button'
+              );
+
+            button.type = 'button';
+
+            button.className =
+              'v7-edit-schedule';
+
+            button.textContent =
+              'Edit schedule';
+
+            button.style.cssText = `
+              width:100%;
+              margin-top:8px;
+              padding:10px;
+              border:2px solid #172018;
+              border-radius:9px;
+              background:#d7f16a;
+              color:#172018;
+              font-size:11px;
+              font-weight:700;
+              cursor:pointer;
+            `;
+
+            button.onclick = () =>
+              openScheduleEditor(
+                record
+              );
+
+            card.appendChild(
+              button
+            );
+          }
+        }
+
+        addCalendarButton(
+          card,
+          record
+        );
+      });
+  }
+
+
+  /* ----------------------------------------------------------
+     12. WATCH THE EXISTING V7 UI
+     ---------------------------------------------------------- */
+
+  const observer =
+    new MutationObserver(() => {
+
+      addWeeklySelector();
+      checkForNewGoal();
+      enhanceCards();
+
+    });
+
+  function startAddon() {
+
+    addWeeklySelector();
+
+    observer.observe(
+      document.body,
+      {
+        childList:true,
+        subtree:true
+      }
+    );
+
+    setInterval(() => {
+
+      addWeeklySelector();
+      checkForNewGoal();
+      enhanceCards();
+
+    }, 1000);
+  }
+
+
+  if (
+    document.readyState ===
+    'loading'
+  ) {
+
+    document.addEventListener(
+      'DOMContentLoaded',
+      startAddon
+    );
+
+  } else {
+
+    startAddon();
+  }
+
+})();
 </script>
 </body>
 </html>
