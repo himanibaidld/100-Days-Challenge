@@ -1451,6 +1451,1495 @@ document.addEventListener('DOMContentLoaded',()=>{restoreSession();setCopy();doc
   }
 
 })();
+ /* ============================================================
+   THE 100 — FINAL SCHEDULE + MISSED DEADLINE ADD-ON
+   ------------------------------------------------------------
+   Keeps v7 logic and existing Firebase data.
+   Adds:
+   1. Persistent weekly weekday schedules
+   2. Correct weekly next-due dates
+   3. Scheduled-date history
+   4. Completed scheduled-date history
+   5. Missed-deadline count
+   6. Fail display on challenge cards
+   7. Weekly selector for new goals
+   ------------------------------------------------------------
+   GOOGLE CALENDAR IS NOT TOUCHED BY THIS SCRIPT.
+   ============================================================ */
+
+
+/* ------------------------------------------------------------
+   1. BASIC HELPERS
+   ------------------------------------------------------------ */
+
+const FINAL_SCHEDULE_VERSION = 3;
+
+const FINAL_WEEKDAYS = [
+  { value: 0, label: "Sun", long: "Sunday", code: "SU" },
+  { value: 1, label: "Mon", long: "Monday", code: "MO" },
+  { value: 2, label: "Tue", long: "Tuesday", code: "TU" },
+  { value: 3, label: "Wed", long: "Wednesday", code: "WE" },
+  { value: 4, label: "Thu", long: "Thursday", code: "TH" },
+  { value: 5, label: "Fri", long: "Friday", code: "FR" },
+  { value: 6, label: "Sat", long: "Saturday", code: "SA" }
+];
+
+
+function finalDateOnly(date) {
+  const d = new Date(date + "T00:00:00");
+  return d.toISOString().slice(0, 10);
+}
+
+
+function finalAddDays(dateString, amount) {
+  const d = new Date(dateString + "T00:00:00");
+  d.setDate(d.getDate() + amount);
+  return d.toISOString().slice(0, 10);
+}
+
+
+function finalChallengeEnd(startDate) {
+  return finalAddDays(startDate || START_DATE, 99);
+}
+
+
+function finalToday() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+
+/*
+   Generate every scheduled date between the start and
+   the 100-day challenge end.
+
+   JavaScript getDay():
+   0 = Sunday
+   1 = Monday
+   ...
+   6 = Saturday
+*/
+function finalBuildScheduledDates(startDate, selectedWeekdays) {
+
+  const start = startDate || START_DATE;
+  const end = finalChallengeEnd(start);
+
+  const wanted = new Set(
+    (selectedWeekdays || [])
+      .map(Number)
+      .filter(n => n >= 0 && n <= 6)
+  );
+
+  const dates = [];
+
+  let cursor = new Date(start + "T00:00:00");
+  const last = new Date(end + "T00:00:00");
+
+  while (cursor <= last) {
+
+    if (wanted.has(cursor.getDay())) {
+      dates.push(cursor.toISOString().slice(0, 10));
+    }
+
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return dates;
+}
+
+
+/*
+   Calculate missed scheduled dates.
+
+   A date counts as a miss only when:
+   - the scheduled date has already passed
+   - it was not recorded as completed
+*/
+function finalCalculateMisses(record) {
+
+  const scheduled = Array.isArray(record.scheduled_dates)
+    ? record.scheduled_dates
+    : [];
+
+  const completed = new Set(
+    Array.isArray(record.completed_dates)
+      ? record.completed_dates
+      : []
+  );
+
+  const today = finalToday();
+
+  return scheduled.filter(date => {
+    return date < today && !completed.has(date);
+  });
+}
+
+
+/*
+   Find the next scheduled date that has not been completed.
+*/
+function finalNextScheduledDate(record) {
+
+  const scheduled = Array.isArray(record.scheduled_dates)
+    ? record.scheduled_dates
+    : [];
+
+  const completed = new Set(
+    Array.isArray(record.completed_dates)
+      ? record.completed_dates
+      : []
+  );
+
+  for (const date of scheduled) {
+    if (!completed.has(date)) {
+      return date;
+    }
+  }
+
+  /*
+     Everything has been completed.
+     Fall back to the existing v7 calculation.
+  */
+  return null;
+}
+
+
+/* ------------------------------------------------------------
+   2. MAKE V7 WEEKLY TARGET / NEXT-DUE SCHEDULE-AWARE
+   ------------------------------------------------------------ */
+
+/*
+   Save the original v7 functions first.
+*/
+const finalOriginalTargetFor = targetFor;
+const finalOriginalNextDueFor = nextDueFor;
+
+
+/*
+   Replace target calculation only for weekly goals
+   that have an actual weekday schedule.
+
+   Daily/custom behaviour remains exactly as v7.
+*/
+targetFor = function(record) {
+
+  if (
+    record &&
+    record.frequency === "weekly" &&
+    Array.isArray(record.scheduled_dates) &&
+    record.scheduled_dates.length
+  ) {
+    return record.scheduled_dates.length;
+  }
+
+  return finalOriginalTargetFor(record);
+};
+
+
+/*
+   Replace next-due calculation for scheduled weekly goals.
+
+   Example:
+   selected weekdays = Monday + Wednesday + Saturday
+
+   The next due date will be the next uncompleted
+   Monday/Wednesday/Saturday rather than simply
+   start + 7 days.
+*/
+nextDueFor = function(record) {
+
+  if (
+    record &&
+    record.frequency === "weekly" &&
+    Array.isArray(record.scheduled_dates) &&
+    record.scheduled_dates.length
+  ) {
+
+    const next = finalNextScheduledDate(record);
+
+    if (next) {
+      return next;
+    }
+
+    /*
+       If all scheduled dates are complete, return
+       the last scheduled date.
+    */
+    return record.scheduled_dates[
+      record.scheduled_dates.length - 1
+    ];
+  }
+
+  return finalOriginalNextDueFor(record);
+};
+
+
+/* ------------------------------------------------------------
+   3. SCHEDULE EDITOR MODAL
+   ------------------------------------------------------------ */
+
+function finalRemoveOldScheduleModal() {
+
+  const old = document.getElementById(
+    "final-schedule-modal"
+  );
+
+  if (old) {
+    old.remove();
+  }
+}
+
+
+function finalCreateScheduleModal() {
+
+  finalRemoveOldScheduleModal();
+
+  const modal = document.createElement("div");
+
+  modal.id = "final-schedule-modal";
+
+  modal.className =
+    "fixed inset-0 z-[100] hidden items-center justify-center bg-[#172018]/70 p-5";
+
+  modal.innerHTML = `
+    <div
+      class="w-full max-w-lg rounded-[1.5rem] border-2 border-[#172018]
+             bg-[#f5f1e8] p-6 shadow-2xl"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="final-schedule-title"
+    >
+
+      <div class="flex items-start justify-between gap-4">
+
+        <div>
+          <h2
+            id="final-schedule-title"
+            class="display text-2xl font-bold"
+          >
+            Edit your schedule
+          </h2>
+
+          <p class="mt-2 text-sm leading-relaxed">
+            Choose the days of the week you want this goal to be due.
+          </p>
+        </div>
+
+        <button
+          id="final-schedule-close"
+          type="button"
+          class="rounded-full border-2 border-[#172018]
+                 px-3 py-1 font-bold"
+          aria-label="Close"
+        >
+          ×
+        </button>
+
+      </div>
+
+      <div
+        id="final-schedule-days"
+        class="mt-6 grid grid-cols-4 gap-2 sm:grid-cols-7"
+      ></div>
+
+      <p
+        id="final-schedule-help"
+        class="mt-4 text-xs font-bold"
+      >
+        Select at least one day.
+      </p>
+
+      <div class="mt-5 flex flex-wrap gap-2">
+
+        <button
+          id="final-schedule-cancel"
+          type="button"
+          class="flex-1 rounded-xl border-2 border-[#172018]
+                 px-4 py-3 font-bold"
+        >
+          Cancel
+        </button>
+
+        <button
+          id="final-schedule-save"
+          type="button"
+          class="flex-1 rounded-xl bg-[#d7f16a]
+                 px-4 py-3 font-bold"
+        >
+          Save schedule
+        </button>
+
+      </div>
+
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  document
+    .getElementById("final-schedule-close")
+    .addEventListener("click", finalCloseSchedule);
+
+  document
+    .getElementById("final-schedule-cancel")
+    .addEventListener("click", finalCloseSchedule);
+
+  document
+    .getElementById("final-schedule-save")
+    .addEventListener(
+      "click",
+      finalSaveSchedule
+    );
+
+  modal.addEventListener("click", event => {
+
+    if (event.target === modal) {
+      finalCloseSchedule();
+    }
+
+  });
+}
+
+
+let finalEditingRecord = null;
+let finalEditingDays = [];
+
+
+function finalRenderScheduleButtons() {
+
+  const container = document.getElementById(
+    "final-schedule-days"
+  );
+
+  if (!container) return;
+
+  container.innerHTML = "";
+
+  FINAL_WEEKDAYS.forEach(day => {
+
+    const selected =
+      finalEditingDays.includes(day.value);
+
+    const button = document.createElement("button");
+
+    button.type = "button";
+
+    button.dataset.day = String(day.value);
+
+    button.className =
+      "rounded-xl border-2 border-[#172018] px-2 py-3 " +
+      "text-sm font-bold transition";
+
+    button.textContent = day.label;
+
+    if (selected) {
+
+      button.style.background = "#d7f16a";
+
+    } else {
+
+      button.style.background = "#f5f1e8";
+    }
+
+    button.addEventListener("click", () => {
+
+      const value = day.value;
+
+      if (finalEditingDays.includes(value)) {
+
+        finalEditingDays =
+          finalEditingDays.filter(x => x !== value);
+
+      } else {
+
+        finalEditingDays =
+          [...finalEditingDays, value]
+            .sort((a, b) => a - b);
+      }
+
+      finalRenderScheduleButtons();
+    });
+
+    container.appendChild(button);
+  });
+
+
+  const help = document.getElementById(
+    "final-schedule-help"
+  );
+
+  if (help) {
+
+    if (!finalEditingDays.length) {
+
+      help.textContent =
+        "Select at least one day.";
+
+    } else {
+
+      const names = finalEditingDays
+        .map(n => FINAL_WEEKDAYS[n].long)
+        .join(", ");
+
+      help.textContent =
+        "Scheduled: " + names;
+    }
+  }
+}
+
+
+function finalOpenSchedule(record) {
+
+  if (!record || !isMine(record)) {
+
+    showToast("You can only edit your own schedule.");
+
+    return;
+  }
+
+  finalEditingRecord = record;
+
+  finalEditingDays =
+    Array.isArray(record.selected_weekdays)
+      ? record.selected_weekdays.map(Number)
+      : [];
+
+
+  /*
+     If the record is weekly but has no stored weekday
+     schedule yet, use the start date's weekday as the
+     safe initial choice.
+  */
+  if (
+    !finalEditingDays.length &&
+    record.frequency === "weekly"
+  ) {
+
+    const start =
+      new Date(
+        (record.start_date || START_DATE) +
+        "T00:00:00"
+      );
+
+    finalEditingDays = [start.getDay()];
+  }
+
+
+  finalCreateScheduleModal();
+
+  const modal =
+    document.getElementById(
+      "final-schedule-modal"
+    );
+
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
+
+  finalRenderScheduleButtons();
+}
+
+
+function finalCloseSchedule() {
+
+  const modal =
+    document.getElementById(
+      "final-schedule-modal"
+    );
+
+  if (!modal) return;
+
+  modal.classList.add("hidden");
+  modal.classList.remove("flex");
+
+  finalEditingRecord = null;
+  finalEditingDays = [];
+}
+
+
+/* ------------------------------------------------------------
+   4. SAVE WEEKLY SCHEDULE
+   ------------------------------------------------------------ */
+
+async function finalSaveSchedule() {
+
+  const record = finalEditingRecord;
+
+  if (!record) return;
+
+  if (!finalEditingDays.length) {
+
+    showToast("Choose at least one day.");
+
+    return;
+  }
+
+
+  const saveButton =
+    document.getElementById(
+      "final-schedule-save"
+    );
+
+  if (saveButton) {
+    saveButton.disabled = true;
+    saveButton.textContent = "Saving...";
+  }
+
+
+  const startDate =
+    record.start_date || START_DATE;
+
+  const scheduledDates =
+    finalBuildScheduledDates(
+      startDate,
+      finalEditingDays
+    );
+
+
+  /*
+     Preserve any already-recorded completed scheduled dates.
+  */
+  let completedDates =
+    Array.isArray(record.completed_dates)
+      ? [...record.completed_dates]
+      : [];
+
+
+  /*
+     Keep only dates that belong to the new schedule.
+  */
+  completedDates =
+    completedDates.filter(date =>
+      scheduledDates.includes(date)
+    );
+
+
+  /*
+     If the old v7 record has a check-in date but
+     no completed_dates history yet, preserve that
+     known check-in where it matches the schedule.
+  */
+  if (
+    record.check_in_date &&
+    scheduledDates.includes(record.check_in_date) &&
+    !completedDates.includes(record.check_in_date)
+  ) {
+
+    completedDates.push(
+      record.check_in_date
+    );
+  }
+
+
+  /*
+     Remove duplicates.
+  */
+  completedDates =
+    [...new Set(completedDates)];
+
+
+  const target =
+    scheduledDates.length;
+
+  const done =
+    Number(record.days_done) || 0;
+
+  const updatedRecord = {
+    ...record,
+    selected_weekdays:
+      finalEditingDays,
+
+    scheduled_dates:
+      scheduledDates,
+
+    completed_dates:
+      completedDates,
+
+    missed_deadlines:
+      finalCalculateMisses({
+        ...record,
+        scheduled_dates: scheduledDates,
+        completed_dates: completedDates
+      }),
+
+    schedule_version:
+      FINAL_SCHEDULE_VERSION,
+
+    target_completions:
+      target,
+
+    expected_completions:
+      target,
+
+    remaining_completions:
+      Math.max(0, target - done),
+
+    next_due_date:
+      finalNextScheduledDate({
+        ...record,
+        scheduled_dates: scheduledDates,
+        completed_dates: completedDates
+      }) || scheduledDates[scheduledDates.length - 1],
+
+    due_date:
+      finalNextScheduledDate({
+        ...record,
+        scheduled_dates: scheduledDates,
+        completed_dates: completedDates
+      }) || scheduledDates[scheduledDates.length - 1],
+
+    updated_at:
+      Date.now(),
+
+    recent_update:
+      "Weekly schedule updated"
+  };
+
+
+  /*
+     Never write the local document ID back into
+     Firestore as a field if it was only created
+     by the realtime listener.
+  */
+  delete updatedRecord.id;
+
+
+  try {
+
+    await db
+      .collection("goals")
+      .doc(record.id)
+      .update(updatedRecord);
+
+
+    showToast(
+      "Schedule saved. Your selected days are now active."
+    );
+
+    finalCloseSchedule();
+
+    /*
+       Firestore's realtime listener will normally
+       re-render automatically. Calling render here
+       also makes the UI feel immediate.
+    */
+    render();
+
+  } catch (error) {
+
+    console.error(
+      "Schedule save failed:",
+      error
+    );
+
+    showToast(
+      "Could not save the schedule. Please try again."
+    );
+
+  } finally {
+
+    if (saveButton) {
+      saveButton.disabled = false;
+      saveButton.textContent = "Save schedule";
+    }
+  }
+}
+
+
+/* ------------------------------------------------------------
+   5. ADD "EDIT SCHEDULE" BUTTON TO PERSONAL WEEKLY CARDS
+   ------------------------------------------------------------ */
+
+function finalAddScheduleButtons() {
+
+  document
+    .querySelectorAll(".challenge-card")
+    .forEach(card => {
+
+      const key = card.dataset.key;
+
+      if (!key) return;
+
+      const record =
+        backendRecords.find(
+          r => keyFor(r) === key
+        );
+
+      if (!record) return;
+
+      if (!isMine(record)) return;
+
+      if (record.frequency !== "weekly") return;
+
+
+      /*
+         Don't duplicate the button.
+      */
+      if (
+        card.querySelector(
+          ".final-edit-schedule-button"
+        )
+      ) {
+        return;
+      }
+
+
+      const actions =
+        card.querySelector(".record-actions");
+
+      if (!actions) return;
+
+
+      const button =
+        document.createElement("button");
+
+      button.type = "button";
+
+      button.className =
+        "final-edit-schedule-button " +
+        "canva-button col-span-2 rounded-xl " +
+        "border-2 border-[#172018] " +
+        "px-3 py-2 text-sm font-bold";
+
+      button.textContent =
+        "Edit schedule";
+
+      button.addEventListener("click", event => {
+
+        event.preventDefault();
+        event.stopPropagation();
+
+        finalOpenSchedule(record);
+      });
+
+
+      actions.prepend(button);
+    });
+}
+
+
+/* ------------------------------------------------------------
+   6. FAIL / MISSED DEADLINE DISPLAY
+   ------------------------------------------------------------ */
+
+function finalAddFailDisplay() {
+
+  document
+    .querySelectorAll(".challenge-card")
+    .forEach(card => {
+
+      const key = card.dataset.key;
+
+      if (!key) return;
+
+      const record =
+        backendRecords.find(
+          r => keyFor(r) === key
+        );
+
+      if (!record) return;
+
+
+      let failLine =
+        card.querySelector(
+          ".final-record-fails"
+        );
+
+
+      if (!failLine) {
+
+        failLine =
+          document.createElement("p");
+
+        failLine.className =
+          "final-record-fails mt-1 text-xs font-bold";
+
+
+        const due =
+          card.querySelector(".record-due");
+
+        if (due) {
+
+          due.insertAdjacentElement(
+            "afterend",
+            failLine
+          );
+
+        } else {
+
+          card.appendChild(failLine);
+        }
+      }
+
+
+      const misses =
+        finalCalculateMisses(record).length;
+
+
+      if (misses === 0) {
+
+        failLine.textContent =
+          "Fails: 0 missed deadlines";
+
+      } else if (misses === 1) {
+
+        failLine.textContent =
+          "Fails: 1 missed deadline";
+
+      } else {
+
+        failLine.textContent =
+          "Fails: " +
+          misses +
+          " missed deadlines";
+      }
+    });
+}
+
+
+/* ------------------------------------------------------------
+   7. CAPTURE CHECK-INS AS COMPLETED SCHEDULED DATES
+   ------------------------------------------------------------ */
+
+/*
+   v7's existing checkIn() remains in control.
+
+   We only record which scheduled date was completed
+   after v7 successfully increments days_done.
+*/
+document.addEventListener(
+  "click",
+  event => {
+
+    const button =
+      event.target.closest(
+        '[data-template-id="best-button"], [data-template-id="bare-button"]'
+      );
+
+    if (!button) return;
+
+
+    const card =
+      button.closest(".challenge-card");
+
+    if (!card) return;
+
+
+    const key = card.dataset.key;
+
+    if (!key) return;
+
+
+    const record =
+      backendRecords.find(
+        r => keyFor(r) === key
+      );
+
+    if (!record) return;
+
+    if (!isMine(record)) return;
+
+    if (record.frequency !== "weekly") return;
+
+
+    const scheduledDate =
+      nextDueFor(record);
+
+    const oldDone =
+      Number(record.days_done) || 0;
+
+
+    /*
+       Give the existing v7 check-in time to save.
+    */
+    setTimeout(async () => {
+
+      try {
+
+        const latest =
+          backendRecords.find(
+            r => keyFor(r) === key
+          );
+
+        if (!latest) return;
+
+
+        const newDone =
+          Number(latest.days_done) || 0;
+
+
+        /*
+           Only record the schedule completion if
+           v7 actually increased the completed count.
+        */
+        if (newDone <= oldDone) return;
+
+        if (!scheduledDate) return;
+
+
+        await db
+          .collection("goals")
+          .doc(latest.id)
+          .update({
+
+            completed_dates:
+              firebase.firestore.FieldValue.arrayUnion(
+                scheduledDate
+              ),
+
+            updated_at:
+              Date.now()
+          });
+
+
+      } catch (error) {
+
+        console.error(
+          "Could not record scheduled completion:",
+          error
+        );
+      }
+
+    }, 1200);
+
+  },
+  true
+);
+
+
+/* ------------------------------------------------------------
+   8. NEW GOAL WEEKLY DAY SELECTOR
+   ------------------------------------------------------------ */
+
+let finalNewGoalDays = [];
+
+
+function finalCreateNewGoalPicker() {
+
+  const frequency =
+    document.getElementById(
+      "goal-frequency"
+    );
+
+  if (!frequency) return;
+
+
+  /*
+     Don't create another picker if one already exists.
+  */
+  if (
+    document.getElementById(
+      "final-new-goal-days"
+    )
+  ) {
+    return;
+  }
+
+
+  const wrapper =
+    document.createElement("div");
+
+  wrapper.id =
+    "final-new-goal-days";
+
+  wrapper.className =
+    "hidden rounded-xl border-2 border-[#172018] p-4";
+
+
+  wrapper.innerHTML = `
+    <p class="text-sm font-bold">
+      Choose your weekly days
+    </p>
+
+    <p class="mt-1 text-xs">
+      Pick the exact days you want this goal to be due.
+    </p>
+
+    <div
+      id="final-new-goal-day-buttons"
+      class="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-7"
+    ></div>
+  `;
+
+
+  const target =
+    document.getElementById(
+      "target-completions"
+    );
+
+
+  if (target && target.parentElement) {
+
+    target.parentElement
+      .insertAdjacentElement(
+        "afterend",
+        wrapper
+      );
+
+  } else {
+
+    frequency.parentElement
+      .parentElement
+      .insertAdjacentElement(
+        "afterend",
+        wrapper
+      );
+  }
+
+
+  finalRenderNewGoalPicker();
+}
+
+
+function finalRenderNewGoalPicker() {
+
+  const container =
+    document.getElementById(
+      "final-new-goal-day-buttons"
+    );
+
+  if (!container) return;
+
+
+  container.innerHTML = "";
+
+
+  FINAL_WEEKDAYS.forEach(day => {
+
+    const button =
+      document.createElement("button");
+
+    button.type = "button";
+
+    button.textContent =
+      day.label;
+
+    button.dataset.day =
+      String(day.value);
+
+    button.className =
+      "rounded-xl border-2 border-[#172018] " +
+      "px-2 py-2 text-sm font-bold";
+
+
+    if (
+      finalNewGoalDays.includes(
+        day.value
+      )
+    ) {
+
+      button.style.background =
+        "#d7f16a";
+
+    } else {
+
+      button.style.background =
+        "#f5f1e8";
+    }
+
+
+    button.addEventListener(
+      "click",
+      () => {
+
+        if (
+          finalNewGoalDays.includes(
+            day.value
+          )
+        ) {
+
+          finalNewGoalDays =
+            finalNewGoalDays.filter(
+              x => x !== day.value
+            );
+
+        } else {
+
+          finalNewGoalDays =
+            [
+              ...finalNewGoalDays,
+              day.value
+            ].sort(
+              (a, b) => a - b
+            );
+        }
+
+        finalRenderNewGoalPicker();
+      }
+    );
+
+
+    container.appendChild(button);
+  });
+}
+
+
+/*
+   Show/hide the new-goal selector when
+   frequency changes.
+*/
+function finalUpdateNewGoalPickerVisibility() {
+
+  const frequency =
+    document.getElementById(
+      "goal-frequency"
+    );
+
+  const picker =
+    document.getElementById(
+      "final-new-goal-days"
+    );
+
+  if (!frequency || !picker) return;
+
+
+  if (frequency.value === "weekly") {
+
+    picker.classList.remove("hidden");
+
+    if (!finalNewGoalDays.length) {
+
+      /*
+         Default to the start-date weekday.
+         Oct 2, 2026 is Friday.
+      */
+      const start =
+        document.getElementById(
+          "goal-start-date"
+        )?.value || START_DATE;
+
+      const date =
+        new Date(start + "T00:00:00");
+
+      finalNewGoalDays = [
+        date.getDay()
+      ];
+    }
+
+    finalRenderNewGoalPicker();
+
+  } else {
+
+    picker.classList.add("hidden");
+  }
+}
+
+
+/* ------------------------------------------------------------
+   9. REMEMBER THE SELECTED DAYS WHEN A NEW GOAL IS SUBMITTED
+   ------------------------------------------------------------ */
+
+let finalPendingNewGoal = null;
+
+
+document.addEventListener(
+  "submit",
+  event => {
+
+    const form =
+      event.target;
+
+    if (
+      !form ||
+      form.id !== "challenge-form"
+    ) {
+      return;
+    }
+
+
+    const frequency =
+      document.getElementById(
+        "goal-frequency"
+      )?.value;
+
+
+    if (frequency !== "weekly") {
+
+      finalPendingNewGoal = null;
+
+      return;
+    }
+
+
+    if (!finalNewGoalDays.length) {
+
+      event.preventDefault();
+
+      showToast(
+        "Choose at least one weekly day."
+      );
+
+      return;
+    }
+
+
+    finalPendingNewGoal = {
+
+      startedAt: Date.now(),
+
+      startDate:
+        document.getElementById(
+          "goal-start-date"
+        )?.value || START_DATE,
+
+      weekdays:
+        [...finalNewGoalDays],
+
+      goalTitle:
+        document.getElementById(
+          "goal-title"
+        )?.value.trim() || ""
+    };
+
+  },
+  true
+);
+
+
+/* ------------------------------------------------------------
+   10. AFTER V7 CREATES A NEW GOAL, SAVE ITS SCHEDULE
+   ------------------------------------------------------------ */
+
+async function finalProcessPendingNewGoal() {
+
+  if (!finalPendingNewGoal) return;
+
+
+  /*
+     Give the original v7 createGoal() time to finish.
+  */
+  if (
+    Date.now() -
+    finalPendingNewGoal.startedAt <
+    1000
+  ) {
+    return;
+  }
+
+
+  const pending =
+    finalPendingNewGoal;
+
+
+  const record =
+    backendRecords
+      .filter(r =>
+        isMine(r) &&
+        r.frequency === "weekly" &&
+        Number(r.created_at || 0) >=
+          pending.startedAt - 3000
+      )
+      .sort(
+        (a, b) =>
+          Number(b.created_at || 0) -
+          Number(a.created_at || 0)
+      )[0];
+
+
+  if (!record) {
+
+    /*
+       Don't wait forever.
+    */
+    if (
+      Date.now() -
+      pending.startedAt >
+      30000
+    ) {
+      finalPendingNewGoal = null;
+    }
+
+    return;
+  }
+
+
+  /*
+     If already processed, stop.
+  */
+  if (
+    record.schedule_version ===
+    FINAL_SCHEDULE_VERSION &&
+    Array.isArray(
+      record.selected_weekdays
+    )
+  ) {
+
+    finalPendingNewGoal = null;
+
+    return;
+  }
+
+
+  const scheduledDates =
+    finalBuildScheduledDates(
+      pending.startDate,
+      pending.weekdays
+    );
+
+
+  const done =
+    Number(record.days_done) || 0;
+
+
+  try {
+
+    await db
+      .collection("goals")
+      .doc(record.id)
+      .update({
+
+        selected_weekdays:
+          pending.weekdays,
+
+        scheduled_dates:
+          scheduledDates,
+
+        completed_dates:
+          [],
+
+        missed_deadlines:
+          finalCalculateMisses({
+            scheduled_dates:
+              scheduledDates,
+
+            completed_dates: []
+          }),
+
+        schedule_version:
+          FINAL_SCHEDULE_VERSION,
+
+        target_completions:
+          scheduledDates.length,
+
+        expected_completions:
+          scheduledDates.length,
+
+        remaining_completions:
+          Math.max(
+            0,
+            scheduledDates.length - done
+          ),
+
+        next_due_date:
+          scheduledDates[0],
+
+        due_date:
+          scheduledDates[0],
+
+        updated_at:
+          Date.now(),
+
+        recent_update:
+          "Weekly schedule created"
+      });
+
+
+    finalPendingNewGoal = null;
+
+  } catch (error) {
+
+    console.error(
+      "Could not attach weekly schedule:",
+      error
+    );
+  }
+}
+
+
+/* ------------------------------------------------------------
+   11. WATCH FOR FIRESTORE / UI UPDATES
+   ------------------------------------------------------------ */
+
+function finalRefreshExtraUI() {
+
+  try {
+
+    finalAddScheduleButtons();
+
+    finalAddFailDisplay();
+
+    finalProcessPendingNewGoal();
+
+  } catch (error) {
+
+    console.error(
+      "Schedule add-on refresh error:",
+      error
+    );
+  }
+}
+
+
+/*
+   Create the new-goal picker after the existing
+   v7 HTML has loaded.
+*/
+setTimeout(() => {
+
+  finalCreateNewGoalPicker();
+
+  const frequency =
+    document.getElementById(
+      "goal-frequency"
+    );
+
+  if (frequency) {
+
+    frequency.addEventListener(
+      "change",
+      finalUpdateNewGoalPickerVisibility
+    );
+
+    finalUpdateNewGoalPickerVisibility();
+  }
+
+}, 500);
+
+
+/*
+   Because v7 re-builds challenge cards whenever
+   Firestore changes, use a lightweight observer.
+*/
+const finalScheduleObserver =
+  new MutationObserver(() => {
+
+    finalRefreshExtraUI();
+
+  });
+
+
+finalScheduleObserver.observe(
+  document.body,
+  {
+    childList: true,
+    subtree: true
+  }
+);
+
+
+/*
+   Also refresh periodically so Firestore's
+   realtime updates are reflected in the fail
+   display even if the card itself isn't replaced.
+*/
+setInterval(
+  finalRefreshExtraUI,
+  1000
+);
+
+
+/*
+   First setup.
+*/
+finalCreateScheduleModal();
+
+setTimeout(
+  finalRefreshExtraUI,
+  1200
+);
+
+
+/* ============================================================
+   END OF FINAL SCHEDULE + MISSED DEADLINE ADD-ON
+   ============================================================ */
 </script>
 </body>
 </html>
