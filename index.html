@@ -1053,6 +1053,639 @@ document.addEventListener('DOMContentLoaded',()=>{restoreSession();setCopy();doc
   );
 
 })();
+ /* =========================================================
+   THE 100 — SAFE ADD-ON
+   FAILS + WEEKLY DAYS + GOOGLE CALENDAR
+   Does not replace v7 functions.
+========================================================= */
+
+(function () {
+
+  const ADDON_DAYS = [
+    { n: 0, short: "Sun", full: "Sunday" },
+    { n: 1, short: "Mon", full: "Monday" },
+    { n: 2, short: "Tue", full: "Tuesday" },
+    { n: 3, short: "Wed", full: "Wednesday" },
+    { n: 4, short: "Thu", full: "Thursday" },
+    { n: 5, short: "Fri", full: "Friday" },
+    { n: 6, short: "Sat", full: "Saturday" }
+  ];
+
+  function addonDate(date) {
+    return new Date(date + "T00:00:00");
+  }
+
+  function addonDateString(date) {
+    return [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, "0"),
+      String(date.getDate()).padStart(2, "0")
+    ].join("-");
+  }
+
+  function addonAddDays(date, days) {
+    const d = addonDate(date);
+    d.setDate(d.getDate() + days);
+    return addonDateString(d);
+  }
+
+  /* =====================================================
+     1. FAIL CALCULATION
+     24 HOURS AFTER A DUE DATE = FAIL
+  ===================================================== */
+
+  function addonFailCount(record) {
+
+    const start = record.start_date || START_DATE;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const startDate = addonDate(start);
+
+    if (today < startDate) return 0;
+
+    /*
+      How many scheduled dates are old enough
+      to have passed the 24-hour grace period?
+    */
+    const elapsedDays =
+      Math.floor((today - startDate) / 86400000);
+
+    let dueCount = 0;
+
+    if (record.frequency === "weekly") {
+      dueCount = Math.floor(elapsedDays / 7);
+    } else {
+      const interval =
+        Math.max(1, Number(record.custom_interval_days) || 1);
+
+      dueCount = Math.floor(elapsedDays / interval);
+    }
+
+    const completed = Number(record.days_done) || 0;
+
+    return Math.max(0, dueCount - completed);
+  }
+
+
+  /* =====================================================
+     2. ADD FAIL TEXT TO CARDS
+  ===================================================== */
+
+  function addonShowFails() {
+
+    document.querySelectorAll(".challenge-card").forEach(card => {
+
+      const key = card.dataset.key;
+      if (!key) return;
+
+      const record = backendRecords.find(r => keyFor(r) === key);
+      if (!record) return;
+
+      let fail = card.querySelector(".addon-fail");
+
+      if (!fail) {
+
+        fail = document.createElement("p");
+
+        fail.className =
+          "addon-fail mt-2 text-xs font-bold";
+
+        const due = card.querySelector(".record-due");
+
+        if (due) {
+          due.insertAdjacentElement("afterend", fail);
+        } else {
+          card.appendChild(fail);
+        }
+      }
+
+      const count = addonFailCount(record);
+
+      fail.textContent =
+        count === 0
+          ? "Fails: 0"
+          : "Fails: " + count;
+
+    });
+  }
+
+
+  /* =====================================================
+     3. WEEKLY DAYS PICKER
+  ===================================================== */
+
+  let addonScheduleRecord = null;
+  let addonSelectedDays = [];
+
+  function addonOpenSchedule(record) {
+
+    if (!record || !isParticipantRecord(record)) {
+      showToast("You can only change your own schedule.");
+      return;
+    }
+
+    addonScheduleRecord = record;
+
+    /*
+      If this is the first time choosing days,
+      start with the current weekly day.
+    */
+    if (
+      Array.isArray(record.selected_weekdays) &&
+      record.selected_weekdays.length
+    ) {
+
+      addonSelectedDays =
+        record.selected_weekdays.map(Number);
+
+    } else {
+
+      const start =
+        addonDate(record.start_date || START_DATE);
+
+      addonSelectedDays = [start.getDay()];
+    }
+
+    let modal = document.getElementById("addon-schedule-modal");
+
+    if (!modal) {
+
+      modal = document.createElement("div");
+
+      modal.id = "addon-schedule-modal";
+
+      modal.className =
+        "fixed inset-0 z-50 hidden items-center justify-center bg-[#172018]/70 p-5";
+
+      modal.innerHTML = `
+        <div class="w-full max-w-md rounded-2xl
+                    border-2 border-[#172018]
+                    bg-[#f5f1e8] p-6">
+
+          <h3 class="display text-xl font-bold">
+            Choose weekly days
+          </h3>
+
+          <p class="mt-2 text-sm">
+            Pick the days this goal should be due.
+          </p>
+
+          <div id="addon-day-buttons"
+               class="mt-5 grid grid-cols-4 gap-2">
+          </div>
+
+          <p id="addon-day-help"
+             class="mt-4 text-xs font-bold">
+          </p>
+
+          <div class="mt-5 flex gap-2">
+
+            <button
+              id="addon-day-cancel"
+              type="button"
+              class="flex-1 rounded-xl
+                     border-2 border-[#172018]
+                     px-4 py-3 font-bold">
+              Cancel
+            </button>
+
+            <button
+              id="addon-day-save"
+              type="button"
+              class="flex-1 rounded-xl
+                     bg-[#d7f16a]
+                     px-4 py-3 font-bold">
+              Save days
+            </button>
+
+          </div>
+
+        </div>
+      `;
+
+      document.body.appendChild(modal);
+
+      document
+        .getElementById("addon-day-cancel")
+        .onclick = addonCloseSchedule;
+
+      document
+        .getElementById("addon-day-save")
+        .onclick = addonSaveSchedule;
+    }
+
+    addonRenderDays();
+
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+  }
+
+
+  function addonRenderDays() {
+
+    const box =
+      document.getElementById("addon-day-buttons");
+
+    if (!box) return;
+
+    box.innerHTML = "";
+
+    ADDON_DAYS.forEach(day => {
+
+      const button =
+        document.createElement("button");
+
+      button.type = "button";
+
+      button.textContent = day.short;
+
+      button.className =
+        "rounded-xl border-2 border-[#172018] px-3 py-3 font-bold";
+
+      button.style.background =
+        addonSelectedDays.includes(day.n)
+          ? "#d7f16a"
+          : "#f5f1e8";
+
+      button.onclick = function () {
+
+        if (addonSelectedDays.includes(day.n)) {
+
+          addonSelectedDays =
+            addonSelectedDays.filter(x => x !== day.n);
+
+        } else {
+
+          addonSelectedDays =
+            [...addonSelectedDays, day.n]
+              .sort((a, b) => a - b);
+        }
+
+        addonRenderDays();
+      };
+
+      box.appendChild(button);
+    });
+
+    const help =
+      document.getElementById("addon-day-help");
+
+    if (help) {
+
+      help.textContent =
+        addonSelectedDays.length
+          ? "Selected: " +
+            addonSelectedDays
+              .map(n => ADDON_DAYS[n].full)
+              .join(", ")
+          : "Choose at least one day.";
+    }
+  }
+
+
+  function addonCloseSchedule() {
+
+    const modal =
+      document.getElementById("addon-schedule-modal");
+
+    if (!modal) return;
+
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+
+    addonScheduleRecord = null;
+  }
+
+
+  function addonBuildDates(startDate, days) {
+
+    const dates = [];
+
+    const end =
+      addonAddDays(startDate, 99);
+
+    let current =
+      addonDate(startDate);
+
+    const last =
+      addonDate(end);
+
+    while (current <= last) {
+
+      if (days.includes(current.getDay())) {
+
+        dates.push(
+          addonDateString(current)
+        );
+      }
+
+      current.setDate(
+        current.getDate() + 1
+      );
+    }
+
+    return dates;
+  }
+
+
+  async function addonSaveSchedule() {
+
+    if (!addonScheduleRecord) return;
+
+    if (!addonSelectedDays.length) {
+
+      showToast("Choose at least one day.");
+
+      return;
+    }
+
+    const record =
+      addonScheduleRecord;
+
+    const dates =
+      addonBuildDates(
+        record.start_date || START_DATE,
+        addonSelectedDays
+      );
+
+    const nextDue =
+      dates.find(date => {
+
+        return date >=
+          addonDateString(new Date());
+
+      }) || dates[dates.length - 1];
+
+    /*
+      IMPORTANT:
+      We use the EXISTING v7 saveSnapshot().
+      We do not delete or directly edit old data.
+    */
+
+    const updated = {
+      ...record,
+
+      selected_weekdays:
+        addonSelectedDays,
+
+      scheduled_dates:
+        dates,
+
+      target_completions:
+        dates.length,
+
+      expected_completions:
+        dates.length,
+
+      remaining_completions:
+        Math.max(
+          0,
+          dates.length -
+          (Number(record.days_done) || 0)
+        ),
+
+      next_due_date:
+        nextDue,
+
+      due_date:
+        nextDue,
+
+      recent_update:
+        "Weekly schedule updated"
+    };
+
+    delete updated.__backendId;
+
+    try {
+
+      await saveSnapshot(
+        updated,
+        document.getElementById("addon-day-save"),
+        "Weekly schedule saved."
+      );
+
+      addonCloseSchedule();
+
+    } catch (error) {
+
+      console.error(
+        "Weekly schedule error:",
+        error
+      );
+
+      showToast(
+        "Could not save the schedule."
+      );
+    }
+  }
+
+
+  /* =====================================================
+     4. ADD "CHOOSE DAYS" BUTTON
+  ===================================================== */
+
+  function addonAddScheduleButtons() {
+
+    document
+      .querySelectorAll(".challenge-card")
+      .forEach(card => {
+
+        if (
+          card.querySelector(
+            ".addon-schedule-button"
+          )
+        ) return;
+
+        const key =
+          card.dataset.key;
+
+        if (!key) return;
+
+        const record =
+          backendRecords.find(
+            r => keyFor(r) === key
+          );
+
+        if (!record) return;
+
+        if (
+          !isParticipantRecord(record) ||
+          record.frequency !== "weekly"
+        ) return;
+
+        const actions =
+          card.querySelector(".record-actions");
+
+        if (!actions) return;
+
+        const button =
+          document.createElement("button");
+
+        button.type = "button";
+
+        button.className =
+          "addon-schedule-button col-span-2 rounded-xl border-2 border-[#172018] px-3 py-2 text-sm font-bold";
+
+        button.textContent =
+          "Choose weekly days";
+
+        button.onclick = function (event) {
+
+          event.preventDefault();
+          event.stopPropagation();
+
+          addonOpenSchedule(record);
+        };
+
+        actions.prepend(button);
+      });
+  }
+
+
+  /* =====================================================
+     5. GOOGLE CALENDAR
+  ===================================================== */
+
+  function addonGoogleCalendar(record) {
+
+    const nextDate =
+      record.next_due_date ||
+      nextDueFor(record);
+
+    if (!nextDate) return;
+
+    /*
+      All-day event.
+      Google Calendar accepts a pre-filled event URL.
+    */
+
+    const start =
+      nextDate.replaceAll("-", "");
+
+    const end =
+      addonAddDays(nextDate, 1)
+        .replaceAll("-", "");
+
+    const title =
+      encodeURIComponent(
+        "THE 100 — " +
+        (record.goal_title || "My 100-day goal")
+      );
+
+    const details =
+      encodeURIComponent(
+        "100-day challenge check-in.\n\n" +
+        "Goal: " +
+        (record.goal_title || "") +
+        "\n\n" +
+        "Log your progress on THE 100."
+      );
+
+    const url =
+      "https://calendar.google.com/calendar/r/eventedit" +
+      "?action=TEMPLATE" +
+      "&dates=" + start + "/" + end +
+      "&text=" + title +
+      "&details=" + details;
+
+    window.open(
+      url,
+      "_blank",
+      "noopener"
+    );
+  }
+
+
+  /* =====================================================
+     6. ADD GOOGLE CALENDAR BUTTON
+  ===================================================== */
+
+  function addonAddCalendarButtons() {
+
+    document
+      .querySelectorAll(".challenge-card")
+      .forEach(card => {
+
+        if (
+          card.querySelector(
+            ".addon-calendar-button"
+          )
+        ) return;
+
+        const key =
+          card.dataset.key;
+
+        if (!key) return;
+
+        const record =
+          backendRecords.find(
+            r => keyFor(r) === key
+          );
+
+        if (!record) return;
+
+        if (!isParticipantRecord(record)) return;
+
+        const actions =
+          card.querySelector(".record-actions");
+
+        if (!actions) return;
+
+        const button =
+          document.createElement("button");
+
+        button.type = "button";
+
+        button.className =
+          "addon-calendar-button col-span-2 rounded-xl border-2 border-[#172018] px-3 py-2 text-sm font-bold";
+
+        button.textContent =
+          "Add next due to Google Calendar";
+
+        button.onclick = function (event) {
+
+          event.preventDefault();
+          event.stopPropagation();
+
+          addonGoogleCalendar(record);
+        };
+
+        actions.appendChild(button);
+      });
+  }
+
+
+  /* =====================================================
+     7. RUN ONLY AFTER v7 HAS RENDERED
+  ===================================================== */
+
+  function addonRefresh() {
+
+    try {
+
+      addonShowFails();
+      addonAddScheduleButtons();
+      addonAddCalendarButtons();
+
+    } catch (error) {
+
+      console.error(
+        "THE 100 add-on error:",
+        error
+      );
+    }
+  }
+
+
+  setTimeout(addonRefresh, 1500);
+
+  setInterval(
+    addonRefresh,
+    2000
+  );
+
+})();
 </script>
 </body>
 </html>
